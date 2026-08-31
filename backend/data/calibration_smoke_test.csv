@@ -1,0 +1,7 @@
+gene,genome_build,chrom,position,ref,alt,clinical_label,source,source_id,reference_score,variant_score,delta_score,window_size,score_status,score_error
+HBB,GRCh38,11,1,A,T,Pathogenic,test,P1,-1.0,-1.003,-0.003,8192,success,
+HBB,GRCh38,11,2,C,G,Pathogenic,test,P2,-1.0,-1.002,-0.002,8192,success,
+HBB,GRCh38,11,3,G,A,Pathogenic,test,P3,-1.0,-1.0015,-0.0015,8192,success,
+HBB,GRCh38,11,4,T,C,Benign,test,B1,-1.0,-1.0001,-0.0001,8192,success,
+HBB,GRCh38,11,5,A,G,Benign,test,B2,-1.0,-0.9999,0.0001,8192,success,
+HBB,GRCh38,11,6,C,T,Benign,test,B3,-1.0,-1.0002,-0.0002,8192,success,

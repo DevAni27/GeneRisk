@@ -1,0 +1,2 @@
+gene,genome_build,chrom,position,ref,alt,clinical_label,source,source_id
+HBB,GRCh38,11,5227002,T,A,Pathogenic,ClinVar,15333
