@@ -5,4 +5,4 @@ __pycache__/
 .pytest_cache/
 
 data/*_scored.csv
-data/*calibration*.json
+data/hbb_calibration_smoke_test.json
