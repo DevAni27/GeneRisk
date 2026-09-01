@@ -2,11 +2,24 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException
 
-from app.models.request import ScoreVariantRequest
+
+from app.models.request import (
+    ScoreQueryRequest,
+    ScoreVariantRequest,
+)
+
 from app.models.response import (
     ClinVarInfoResponse,
+    ResolvedVariantResponse,
+    ScoreQueryResponse,
     ScoreVariantResponse,
     SequenceContextResponse,
+)
+
+from app.services.resolver import (
+    VariantResolutionError,
+    VariantResolutionServiceError,
+    resolve_variant_query,
 )
 
 from app.services.prediction import (
@@ -186,6 +199,18 @@ async def score_variant(
         confidence=prediction_result.confidence,
 
         calibrated=prediction_result.calibrated,
+        
+        pathogenicity_index=(
+            prediction_result.pathogenicity_index
+        ),
+
+        signal_strength=(
+            prediction_result.signal_strength
+        ),
+
+        threshold=(
+            prediction_result.threshold
+        ),
 
         # REAL ClinVar data
         clinvar_label=clinvar_label,
@@ -259,5 +284,82 @@ async def score_variant(
             ref=display_context.ref,
 
             alt=display_context.alt,
+        ),
+    )
+    
+@router.post(
+    "/score-query",
+    response_model=ScoreQueryResponse,
+)
+async def score_query(
+    request: ScoreQueryRequest,
+) -> ScoreQueryResponse:
+
+    # -------------------------------------------------
+    # 1. Understand / normalize user input
+    # -------------------------------------------------
+
+    try:
+        resolved = await resolve_variant_query(
+            request.query
+        )
+
+    except VariantResolutionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    except VariantResolutionServiceError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
+
+
+    # -------------------------------------------------
+    # 2. Feed normalized variant into EXISTING pipeline
+    # -------------------------------------------------
+
+    variant_request = ScoreVariantRequest(
+        gene=resolved.gene,
+        chrom=resolved.chrom,
+        position=resolved.position,
+        ref=resolved.ref,
+        alt=resolved.alt,
+    )
+
+    scored = await score_variant(
+        variant_request
+    )
+
+
+    # -------------------------------------------------
+    # 3. Return normal score + resolution information
+    # -------------------------------------------------
+
+    return ScoreQueryResponse(
+        **scored.model_dump(),
+
+        input_query=request.query,
+
+        resolved_variant=(
+            ResolvedVariantResponse(
+                gene=resolved.gene,
+                genome_build=(
+                    resolved.genome_build
+                ),
+                chrom=resolved.chrom,
+                position=resolved.position,
+                ref=resolved.ref,
+                alt=resolved.alt,
+                input_format=(
+                    resolved.input_format
+                ),
+                normalized_hgvs=(
+                    resolved.normalized_hgvs
+                ),
+                rsid=resolved.rsid,
+            )
         ),
     )

@@ -2,6 +2,17 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+class ResolvedVariantResponse(BaseModel):
+    gene: str
+    genome_build: str
+    chrom: str
+    position: int
+    ref: str
+    alt: str
+    input_format: str
+    normalized_hgvs: str | None
+    rsid: str | None
+
 
 class SequenceContextResponse(BaseModel):
     genome: str
@@ -47,6 +58,17 @@ class ScoreVariantResponse(BaseModel):
     
     calibrated : bool
     
+    pathogenicity_index: int | None
+
+    signal_strength: Literal[
+        "strong_pathogenic",
+        "pathogenic_like",
+        "benign_like",
+        "strong_benign",
+    ] | None
+
+    threshold: float | None
+    
     clinvar_label: str
     
     clinvar: ClinVarInfoResponse
@@ -54,3 +76,7 @@ class ScoreVariantResponse(BaseModel):
     explanation: str
 
     sequence_context: SequenceContextResponse
+    
+class ScoreQueryResponse(ScoreVariantResponse):
+    input_query: str
+    resolved_variant: ResolvedVariantResponse
