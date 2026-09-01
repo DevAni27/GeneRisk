@@ -49,6 +49,22 @@ from app.services.ucsc import (
     get_centered_variant_context,
 )
 
+from fastapi import (
+    File,
+    HTTPException,
+    UploadFile,
+)
+
+from app.models.report import (
+    ReportExtractionResponse,
+)
+
+from app.services.report_parser import (
+    ReportParsingError,
+    extract_pdf_text,
+    parse_hbb_report,
+)
+
 
 async def safe_lookup_clinvar(
     chrom: str,
@@ -71,6 +87,104 @@ async def safe_lookup_clinvar(
 
 
 router = APIRouter()
+
+MAX_REPORT_BYTES = (
+    5 * 1024 * 1024
+)
+
+
+@router.post(
+    "/extract-report",
+    response_model=ReportExtractionResponse,
+)
+async def extract_report(
+    file: UploadFile = File(...),
+):
+    filename = (
+        file.filename
+        or "report.pdf"
+    )
+
+    is_pdf_name = (
+        filename
+        .lower()
+        .endswith(".pdf")
+    )
+
+    is_pdf_content_type = (
+        file.content_type
+        in {
+            "application/pdf",
+            "application/x-pdf",
+        }
+    )
+
+    if not (
+        is_pdf_name
+        or is_pdf_content_type
+    ):
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                "Only PDF reports "
+                "are currently supported."
+            ),
+        )
+
+    pdf_bytes = await file.read(
+        MAX_REPORT_BYTES + 1
+    )
+
+    await file.close()
+
+    if len(pdf_bytes) == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="The uploaded PDF is empty.",
+        )
+
+    if (
+        len(pdf_bytes)
+        > MAX_REPORT_BYTES
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "PDF is too large. "
+                "Maximum file size is 5 MB."
+            ),
+        )
+
+    # Basic PDF signature validation.
+    if (
+        b"%PDF-"
+        not in pdf_bytes[:1024]
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The uploaded file does not "
+                "appear to be a valid PDF."
+            ),
+        )
+
+    try:
+        text = extract_pdf_text(
+            pdf_bytes
+        )
+
+        result = parse_hbb_report(
+            text=text,
+            filename=filename,
+        )
+
+    except ReportParsingError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    return result
 
 @router.get(
     "/cache-stats",
