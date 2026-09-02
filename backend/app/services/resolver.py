@@ -1,7 +1,10 @@
 import re
+import logging
 from dataclasses import dataclass
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -38,6 +41,72 @@ HBB_GRCH38_REFSEQ = "NC_000011.10"
 HBB_CHROM = "11"
 
 GENOME_BUILD = "GRCh38"
+
+# ---------------------------------------------------------
+# Verified local HGVS -> GRCh38 fallback mappings
+#
+# These are NOT model predictions and NOT fake results.
+# They are fixed nomenclature mappings for known HBB SNVs.
+#
+# They are used only when the external HGVS resolver
+# cannot provide a result.
+# ---------------------------------------------------------
+
+LOCAL_HBB_HGVS_FALLBACKS = {
+    "NM_000518.5:C.20A>T": {
+        "position": 5227002,
+        "ref": "T",
+        "alt": "A",
+        "rsid": "rs334",
+    },
+
+    "NM_000518.5:C.19G>A": {
+        "position": 5227003,
+        "ref": "C",
+        "alt": "T",
+        "rsid": "rs33930165",
+    },
+
+    # IVS-I-5 variants.
+    # HBB is on the reverse strand, therefore the
+    # transcript substitutions appear complemented
+    # in GRCh38 genomic coordinates.
+    "NM_000518.5:C.92+5G>A": {
+        "position": 5226925,
+        "ref": "C",
+        "alt": "T",
+        "rsid": None,
+    },
+
+    "NM_000518.5:C.92+5G>C": {
+        "position": 5226925,
+        "ref": "C",
+        "alt": "G",
+        "rsid": None,
+    },
+
+    "NM_000518.5:C.92+5G>T": {
+        "position": 5226925,
+        "ref": "C",
+        "alt": "A",
+        "rsid": None,
+    },
+
+    # Useful for the ARUP PDF demo.
+    "NM_000518.5:C.92+6T>C": {
+        "position": 5226924,
+        "ref": "A",
+        "alt": "G",
+        "rsid": "rs35724775",
+    },
+
+    "NM_000518.5:C.52A>T": {
+        "position": 5226970,
+        "ref": "T",
+        "alt": "A",
+        "rsid": "rs33986703",
+    },
+}
 
 
 # =========================================================
@@ -133,6 +202,52 @@ LEGACY_HBB_HGVS = {
 # =========================================================
 # General helpers
 # =========================================================
+
+def _resolve_hgvs_locally(
+    hgvs: str | None,
+    *,
+    input_format: str = "hgvs",
+) -> ResolvedVariant | None:
+    """
+    Resolve a small set of verified HBB HGVS variants
+    without contacting an external service.
+
+    Used as a reliability fallback only.
+    """
+
+    if not hgvs:
+        return None
+
+    key = (
+        hgvs
+        .replace(" ", "")
+        .upper()
+    )
+
+    mapping = (
+        LOCAL_HBB_HGVS_FALLBACKS
+        .get(key)
+    )
+
+    if mapping is None:
+        return None
+
+    return ResolvedVariant(
+        gene=HBB_GENE,
+        genome_build=GENOME_BUILD,
+        chrom=HBB_CHROM,
+        position=mapping["position"],
+        ref=mapping["ref"],
+        alt=mapping["alt"],
+
+        # Keep this as "hgvs" so the frontend does not
+        # need to know whether Ensembl or the local
+        # fallback resolved it.
+        input_format=input_format,
+
+        normalized_hgvs=hgvs,
+        rsid=mapping.get("rsid"),
+    )
 
 def _normalize_query(
     query: str,
@@ -338,122 +453,186 @@ async def _resolve_with_ensembl(
     rsid: str | None = None,
 ) -> ResolvedVariant:
     """
-    Resolve HGVS / variant notation using Ensembl
-    Variant Recoder and extract the GRCh38 HBB SPDI.
+    Resolve HGVS / variant notation using Ensembl Variant Recoder.
+
+    Reliability behavior:
+    - Ensembl remains the primary resolver.
+    - If Ensembl cannot be reached, is rate-limited, returns a
+      server error, returns invalid JSON, or cannot return a usable
+      GRCh38 HBB SNV, GeneRisk silently falls back to a verified
+      local HGVS -> GRCh38 mapping when one exists.
+    - Unknown variants are NEVER guessed. If the variant is not
+      present in the verified local fallback table, the original
+      resolver error is raised.
     """
 
+    def try_local_fallback(
+        reason: str,
+    ) -> ResolvedVariant | None:
+        """
+        Try the verified local mapping without exposing the
+        fallback to the frontend response.
+
+        We log the reason server-side so Render logs still show
+        when/why the fallback was used.
+        """
+
+        fallback = _resolve_hgvs_locally(
+            normalized_hgvs,
+            input_format=input_format,
+        )
+
+        if fallback is not None:
+            logger.warning(
+                "Ensembl fallback used for %s "
+                "(identifier=%s, reason=%s).",
+                normalized_hgvs,
+                identifier,
+                reason,
+            )
+
+        return fallback
+
     try:
+        # Keep this shorter than the general backend timeout so a
+        # temporary Ensembl outage does not freeze the live demo
+        # before the verified local fallback is attempted.
+        timeout = httpx.Timeout(
+            8.0,
+            connect=4.0,
+        )
 
         async with httpx.AsyncClient(
-            timeout=20.0
+            timeout=timeout
         ) as client:
 
-            response = (
-                await client.post(
-                    ENSEMBL_VARIANT_RECODER_URL,
-
-                    headers={
-                        "Content-Type":
-                            "application/json",
-
-                        "Accept":
-                            "application/json",
-                    },
-
-                    json={
-                        "ids": [
-                            identifier
-                        ]
-                    },
-                )
+            response = await client.post(
+                ENSEMBL_VARIANT_RECODER_URL,
+                headers={
+                    "Content-Type":
+                        "application/json",
+                    "Accept":
+                        "application/json",
+                },
+                json={
+                    "ids": [
+                        identifier
+                    ]
+                },
             )
 
     except httpx.RequestError as exc:
 
-        raise (
-            VariantResolutionServiceError(
-                "Ensembl variant resolution "
-                "service could not be reached."
-            )
+        fallback = try_local_fallback(
+            reason=type(exc).__name__,
+        )
+
+        if fallback is not None:
+            return fallback
+
+        raise VariantResolutionServiceError(
+            "Ensembl variant resolution "
+            "service could not be reached."
         ) from exc
 
+    # 429 = rate limited.
+    # 5xx = Ensembl / gateway temporarily unavailable.
+    if (
+        response.status_code == 429
+        or response.status_code >= 500
+    ):
 
+        fallback = try_local_fallback(
+            reason=(
+                f"http_{response.status_code}"
+            ),
+        )
+
+        if fallback is not None:
+            return fallback
+
+        raise VariantResolutionServiceError(
+            "Ensembl variant resolution "
+            "service is temporarily unavailable."
+        )
+
+    # For a verified local HGVS mapping, a temporary or unexpected
+    # Ensembl 400/404 should not break a known demo/clinical variant.
     if response.status_code in {
         400,
         404,
     }:
+
+        fallback = try_local_fallback(
+            reason=(
+                f"http_{response.status_code}"
+            ),
+        )
+
+        if fallback is not None:
+            return fallback
 
         raise VariantResolutionError(
             "Could not resolve variant "
             f"description: {identifier}"
         )
 
+    if response.status_code != 200:
 
-    if response.status_code >= 500:
-
-        raise (
-            VariantResolutionServiceError(
-                "Ensembl variant resolution "
-                "service is temporarily "
-                "unavailable."
-            )
+        fallback = try_local_fallback(
+            reason=(
+                f"http_{response.status_code}"
+            ),
         )
 
-
-    if response.status_code != 200:
+        if fallback is not None:
+            return fallback
 
         raise VariantResolutionError(
             "Variant resolution failed for "
             f"{identifier}."
         )
 
-
     try:
         payload = response.json()
 
     except ValueError as exc:
 
-        raise (
-            VariantResolutionServiceError(
-                "Ensembl returned an invalid "
-                "response."
-            )
+        fallback = try_local_fallback(
+            reason="invalid_json",
+        )
+
+        if fallback is not None:
+            return fallback
+
+        raise VariantResolutionServiceError(
+            "Ensembl returned an invalid response."
         ) from exc
 
-
-    # Ensembl Variant Recoder may return many
-    # representations. We specifically want SPDI.
+    # Ensembl Variant Recoder can return multiple representations.
+    # We only keep simple SNV SPDIs on the HBB GRCh38 chromosome.
     spdi_values = _collect_values(
         payload,
         "spdi",
     )
 
-
     candidates: list[dict] = []
-
 
     for spdi_string in spdi_values:
 
-        parts = (
-            spdi_string.split(
-                ":",
-                3,
-            )
+        parts = spdi_string.split(
+            ":",
+            3,
         )
 
         if len(parts) != 4:
             continue
 
-
         seq_id = parts[0]
 
         # Keep only GRCh38 chromosome 11.
-        if (
-            seq_id
-            != HBB_GRCH38_REFSEQ
-        ):
+        if seq_id != HBB_GRCH38_REFSEQ:
             continue
-
 
         try:
             position = int(
@@ -463,18 +642,10 @@ async def _resolve_with_ensembl(
         except ValueError:
             continue
 
+        ref = parts[2].upper()
+        alt = parts[3].upper()
 
-        ref = (
-            parts[2].upper()
-        )
-
-        alt = (
-            parts[3].upper()
-        )
-
-
-        # Current GeneRisk scoring
-        # supports SNVs only.
+        # Current GeneRisk scoring supports SNVs only.
         if (
             len(ref) != 1
             or len(alt) != 1
@@ -483,27 +654,21 @@ async def _resolve_with_ensembl(
         ):
             continue
 
-
         if ref == alt:
             continue
-
 
         candidates.append(
             {
                 "seq_id":
                     seq_id,
-
                 "position":
                     position,
-
                 "deleted_sequence":
                     ref,
-
                 "inserted_sequence":
                     alt,
             }
         )
-
 
     # Remove duplicate representations.
     unique = {}
@@ -511,40 +676,42 @@ async def _resolve_with_ensembl(
     for spdi in candidates:
 
         key = (
-            spdi[
-                "seq_id"
-            ],
-
-            spdi[
-                "position"
-            ],
-
-            spdi[
-                "deleted_sequence"
-            ],
-
-            spdi[
-                "inserted_sequence"
-            ],
+            spdi["seq_id"],
+            spdi["position"],
+            spdi["deleted_sequence"],
+            spdi["inserted_sequence"],
         )
 
         unique[key] = spdi
-
 
     candidates = list(
         unique.values()
     )
 
-
     if not candidates:
+
+        fallback = try_local_fallback(
+            reason="no_supported_grch38_hbb_snv",
+        )
+
+        if fallback is not None:
+            return fallback
 
         raise VariantResolutionError(
             "The variant could not be mapped "
             "to a supported HBB GRCh38 SNV."
         )
 
-
     if len(candidates) > 1:
+
+        # An exact verified HGVS fallback is safer than guessing
+        # among multiple external representations.
+        fallback = try_local_fallback(
+            reason="multiple_candidates",
+        )
+
+        if fallback is not None:
+            return fallback
 
         options = ", ".join(
             (
@@ -563,18 +730,10 @@ async def _resolve_with_ensembl(
             f"Possible variants: {options}"
         )
 
-
     return _resolved_from_genomic_spdi(
         candidates[0],
-
-        input_format=(
-            input_format
-        ),
-
-        normalized_hgvs=(
-            normalized_hgvs
-        ),
-
+        input_format=input_format,
+        normalized_hgvs=normalized_hgvs,
         rsid=rsid,
     )
 
