@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #F1F4F1;
+  --color-ink: #17242B;
+  --color-ink-soft: #4A5A5F;
+  --color-teal: #0B6E67;
+  --color-teal-light: #5FBFB2;
+  --color-amber: #D9A441;
+  --color-clay: #B8462F;
+  --color-moss: #4C7A4F;
+  --color-line: #D5DDD8;
+
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius-card: 14px;
+  --radius-soft: 12px;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+.dark {
+  --color-paper: #12181A;
+  --color-white: #1B2224;
+  --color-ink: #EDEFEC;
+  --color-ink-soft: #93A1A0;
+  --color-teal: #35B7A8;
+  --color-teal-light: #7FE0D3;
+  --color-amber: #E8B455;
+  --color-clay: #E2694F;
+  --color-moss: #6FAE72;
+  --color-line: #2A3336;
+}
+@media print {
+  nav,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #17242b !important;
+  }
+
+  .print-area {
+    box-shadow: none !important;
+  }
+}
